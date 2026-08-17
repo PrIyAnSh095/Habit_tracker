@@ -1,87 +1,105 @@
 const express = require("express");
 const cors = require("cors");
+const mongoose = require("mongoose");
+const dns = require("dns");
+require("dotenv").config();
+
+// Fix querySrv ECONNREFUSED on Windows for MongoDB Atlas
+try {
+  dns.setServers(["8.8.8.8", "1.1.1.1"]);
+} catch (e) {}
+
+const Habit = require("./models/habits");
 
 const app = express();
 const PORT = process.env.PORT || 5000;
+const MONGO_URI = process.env.MONGO_URI || "mongodb://127.0.0.1:27017/habit_tracker";
+
+mongoose
+  .connect(MONGO_URI)
+  .then(() => console.log("MongoDB connected"))
+  .catch((err) => console.error("MongoDB connection error:", err));
 
 app.use(cors());
 app.use(express.json());
 
-app.use((req, res, next) => {
-  console.log(`${req.method} ${req.url}`);
-  next();
+// Helper to format Mongoose documents with 'id' and '_id' for frontend compatibility
+const formatHabit = (h) => ({
+  id: h._id.toString(),
+  _id: h._id.toString(),
+  title: h.title,
+  completed: h.completed,
+  createdAt: h.createdAt,
 });
 
-let habits = [
-  { id: 1, title: "Drink 2L Water", completed: false },
-  { id: 2, title: "Exercise for 30 Minutes", completed: false },
-  { id: 3, title: "Read for 20 Minutes", completed: false },
-  { id: 4, title: "Practice Coding", completed: false },
-  { id: 5, title: "Sleep 8 Hours", completed: false },
-];
-
-let nextId = 6;
-
-app.get("/habits", (req, res) => {
-  res.status(200).json(habits);
+// GET all habits
+app.get("/habits", async (req, res) => {
+  try {
+    const habits = await Habit.find();
+    res.status(200).json(habits.map(formatHabit));
+  } catch (err) {
+    res.status(500).json({ message: "Failed to fetch habits" });
+  }
 });
 
-app.post("/habits", (req, res) => {
-  const { title } = req.body;
+// POST new habit
+app.post("/habits", async (req, res) => {
+  try {
+    const { title } = req.body;
+    if (!title || typeof title !== "string" || !title.trim()) {
+      return res.status(400).json({ message: "Title is required and cannot be empty." });
+    }
 
-  if (!title || typeof title !== "string" || !title.trim()) {
-    return res.status(400).json({ message: "Title is required and cannot be empty." });
+    const newHabit = await Habit.create({ title: title.trim() });
+    res.status(201).json(formatHabit(newHabit));
+  } catch (err) {
+    res.status(500).json({ message: "Failed to create habit" });
   }
-
-  const newHabit = {
-    id: nextId++,
-    title: title.trim(),
-    completed: false,
-  };
-
-  habits.push(newHabit);
-  res.status(201).json(newHabit);
 });
 
-app.put("/habits/:id", (req, res) => {
-  const id = parseInt(req.params.id, 10);
-  if (isNaN(id)) {
-    return res.status(400).json({ message: "Invalid habit ID." });
-  }
+// PUT update habit completion status
+app.put("/habits/:id", async (req, res) => {
+  try {
+    const { completed } = req.body;
+    if (typeof completed !== "boolean") {
+      return res.status(400).json({ message: "Completed field must be a boolean value." });
+    }
 
-  const habit = habits.find((h) => h.id === id);
-  if (!habit) {
-    return res.status(404).json({ message: `Habit with ID ${id} not found.` });
-  }
+    const updatedHabit = await Habit.findByIdAndUpdate(
+      req.params.id,
+      { completed },
+      { new: true }
+    );
 
-  const { completed } = req.body;
-  if (typeof completed !== "boolean") {
-    return res.status(400).json({ message: "Completed field must be a boolean value." });
-  }
+    if (!updatedHabit) {
+      return res.status(404).json({ message: `Habit with ID ${req.params.id} not found.` });
+    }
 
-  habit.completed = completed;
-  res.status(200).json(habit);
+    res.status(200).json(formatHabit(updatedHabit));
+  } catch (err) {
+    res.status(500).json({ message: "Failed to update habit" });
+  }
 });
 
-app.delete("/habits/:id", (req, res) => {
-  const id = parseInt(req.params.id, 10);
-  if (isNaN(id)) {
-    return res.status(400).json({ message: "Invalid habit ID." });
+// DELETE habit
+app.delete("/habits/:id", async (req, res) => {
+  try {
+    const deletedHabit = await Habit.findByIdAndDelete(req.params.id);
+    if (!deletedHabit) {
+      return res.status(404).json({ message: `Habit with ID ${req.params.id} not found.` });
+    }
+    res.status(200).json({ message: "Habit deleted successfully.", habit: formatHabit(deletedHabit) });
+  } catch (err) {
+    res.status(500).json({ message: "Failed to delete habit" });
   }
-
-  const index = habits.findIndex((h) => h.id === id);
-  if (index === -1) {
-    return res.status(404).json({ message: `Habit with ID ${id} not found.` });
-  }
-
-  const deleted = habits.splice(index, 1);
-  res.status(200).json({ message: "Habit deleted successfully.", habit: deleted[0] });
 });
 
+// 404 Route Handler
 app.use((req, res) => {
   res.status(404).json({ message: "Route not found." });
 });
 
+// Error Handler
 app.use((err, req, res, next) => {
   console.error("Internal Server Error:", err.stack);
   res.status(500).json({ message: "Internal server error." });
